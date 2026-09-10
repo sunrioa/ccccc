@@ -1,0 +1,7 @@
+/dist/
+/relay
+/relay.exe
+/client.json
+/server-data/
+/relay-data-*/
+*.relay.zip
