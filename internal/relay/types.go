@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-const Version = "0.4.0"
+const Version = "0.4.1"
 const MaxBundle int64 = 2 << 30
 const MaxExpanded int64 = 8 << 30
 

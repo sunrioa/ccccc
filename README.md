@@ -1,4 +1,4 @@
-# Session Relay 0.4
+# Session Relay 0.4.1
 
 Mac / Windows 的 Codex 与 Claude Code 会话，通过自己的 Linux 服务器中转。
 
@@ -195,3 +195,5 @@ RELAY_NATIVE_TEST=1 go test ./internal/relay -run TestNativeCodex -v
 ```sh
 RELAY_LARGE_TEST=1 go test ./internal/relay -run TestLargeSessionRoundTrip -v
 ```
+
+0.4.1：我的设备支持按会话项目名、路径、设备名、工具实时筛选，多关键词取交集；传输记录支持关键词搜索。搜索仅使用已有列表元数据，不检索或上传会话正文。任务搜索范围为当前载入的最近 100 条记录。

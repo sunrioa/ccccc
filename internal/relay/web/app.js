@@ -24,6 +24,7 @@ async function guarded(fn){if(busy)return;busy=true;try{await fn()}catch(e){toas
 function setTab(t){tab=t;for(const b of document.querySelectorAll('[data-tab]'))b.classList.toggle('active',b.dataset.tab===t);for(const el of document.querySelectorAll('.tab'))el.hidden=el.id!=='tab-'+t;$('#page-title').textContent={snapshots:'快照库',jobs:'传输与恢复',devices:'我的设备'}[t];$('#page-kicker').textContent={snapshots:'SNAPSHOT LIBRARY',jobs:'TRANSFER HISTORY',devices:'CONNECTED DEVICES'}[t]}
 async function refresh(){try{state=await api('/state');logged=true;$('#login').hidden=true;$('#app').hidden=false;render();$('#connection').textContent='中转站已连接';$('#updated-at').textContent='更新于 '+new Date().toLocaleTimeString('zh-CN');$('#banner').hidden=true}catch(e){if(logged){$('#banner').hidden=false;$('#banner').textContent='连接暂时中断：'+e.message}}}
 function render(){
+ $('.version').textContent="LOCAL FIRST · v"+(state.version||"未知");
  $('#online-count').innerHTML=state.devices.filter(online).length+' <small>/ '+state.devices.length+'</small>';
  $('#snapshot-count').textContent=state.snapshots.length;$('#nav-count').textContent=state.snapshots.length;
  $('#stored-size').textContent=bytes(state.snapshots.reduce((s,b)=>s+b.size,0));
@@ -37,7 +38,17 @@ function renderSnapshots(){
  $('#snapshot-list').innerHTML=`<table class="snapshot-table"><thead><tr><th>项目 / 工具</th><th>来源设备</th><th>会话与体积</th><th>创建时间</th><th>操作</th></tr></thead><tbody>${list.map(b=>`<tr><td><span class="badge ${esc(b.provider)}">${names[b.provider]}</span><p class="project-name">${esc(shortPath(b.source_path))}</p><div class="subtext" title="${esc(b.source_path)}">${esc(b.source_path)}</div></td><td>${esc(deviceName(b.device_id))}<div class="subtext">${esc(b.source_os)}</div></td><td>${b.sessions} 个记录 · ${bytes(b.size)}<div class="subtext">原始 ${bytes(b.raw_size)}${b.extras?' · '+b.extras+' 个关联文件':''}</div></td><td>${date(b.created)}<div class="subtext">${b.temporary?"临时中转 · "+date(b.expires)+" 到期":"长期保留"}</div></td><td><div class="row-actions"><button class="text-button" data-action="preview" data-id="${b.id}">恢复到设备</button><a href="/api/snapshots/${b.id}">下载</a><button class="text-button danger" data-action="delete-snapshot" data-id="${b.id}">删除</button></div></td></tr>`).join('')}</tbody></table>`;
 }
 function renderDevices(){
- $('#device-list').innerHTML=state.devices.length?state.devices.map(d=>`<article class="device-card"><header><div><h3>${esc(d.name)}</h3><p class="muted">${esc(d.os||'等待连接')} · 客户端 ${esc(d.version||'未知')}</p></div><span class="badge ${online(d)?'ok':''}">${online(d)?'在线':'离线'}</span></header>${!/^0\.([4-9]|[1-9][0-9]+)\./.test(d.version||'')?'<div class="notice">0.4 客户端支持自动 SSH 连接；升级时保留 client.json 与数据目录，并复制新版启动和设置脚本。</div>':''}<p class="muted">最后连接 ${date(d.last_seen)}</p>${d.import_root?`<p class="muted">新项目导入位置：<code>${esc(d.import_root)}</code></p><button class="text-button" data-action="scan" data-id="${d.id}">立即刷新项目与工具状态</button>`:''}<ul>${(d.projects||[]).map(p=>{const items=(d.inventory||[]).filter(i=>i.project===p.key&&i.count>0);return `<li><strong>${esc(shortPath(p.path))}</strong> ${p.missing?'<span class="badge warn">代码目录已不存在</span>':''}<br><code>${esc(p.path)}</code>${items.map(i=>`<div class="project-transfer"><span>${names[i.provider]} · ${i.count} 个记录${i.bytes?' · '+bytes(i.bytes):''}${i.largest?' · 最大单文件 '+bytes(i.largest):''}</span><button class="text-button" data-action="export-project" data-device="${d.id}" data-project="${esc(p.key)}" data-provider="${i.provider}">创建快照 →</button>${i.agent_status==='running'?`<small class="error">${names[i.provider]} 正在运行，导出前请完全退出。</small>`:''}${i.error?`<small class="error">${esc(i.error)}</small>`:''}</div>`).join('')}${!items.length?'<p class="muted">暂未发现会话</p>':''}</li>`}).join('')||'<li>连接后自动扫描项目，无需手填路径。</li>'}</ul>${(d.inventory||[]).filter(i=>!i.project&&i.error).map(i=>`<p class="error">${esc(i.error)}</p>`).join('')}</article>`).join(''):`<div class="empty"><h3>先连接两台电脑</h3><p>每台电脑使用各自的 client.json；完成一次 SSH 设置后，启动客户端即可自动连接。</p><button class="primary" data-action="device">添加设备</button></div>`;
+ const query=$('#device-search').value.trim().toLocaleLowerCase(),provider=$('#device-provider').value;
+ const filtering=!!query||provider!=='all';
+ const devices=state.devices.map(d=>({...d,projects:(d.projects||[]).filter(p=>{
+  const inv=(d.inventory||[]).filter(i=>i.project===p.key&&i.count>0);
+  const text=[p.key,p.path,d.name,...inv.map(i=>names[i.provider])].join(' ').toLocaleLowerCase();
+  return (!query||query.split(/\s+/).every(term=>text.includes(term)))&&(provider==='all'||inv.some(i=>i.provider===provider));
+ })})).filter(d=>!filtering||d.projects.length);
+ const count=devices.reduce((sum,d)=>sum+d.projects.length,0);
+ $('#device-search-count').textContent=filtering?'找到 '+count+' 个会话项目 · '+devices.length+' 台设备':'共 '+count+' 个项目，可搜索项目名、路径、设备名和工具';
+ if(filtering&&!devices.length){$('#device-list').innerHTML='<div class="empty"><h3>没有匹配的会话项目</h3><p>试试更短的关键词，或清空搜索与工具筛选。</p><button class="secondary" data-action="clear-device-search">显示全部项目</button></div>';return}
+ $('#device-list').innerHTML=state.devices.length?devices.map(d=>`<article class="device-card"><header><div><h3>${esc(d.name)}</h3><p class="muted">${esc(d.os||'等待连接')} · 客户端 ${esc(d.version||'未知')}</p></div><span class="badge ${online(d)?'ok':''}">${online(d)?'在线':'离线'}</span></header>${!/^0\.([4-9]|[1-9][0-9]+)\./.test(d.version||'')?'<div class="notice">0.4 客户端支持自动 SSH 连接；升级时保留 client.json 与数据目录，并复制新版启动和设置脚本。</div>':''}<p class="muted">最后连接 ${date(d.last_seen)}</p>${d.import_root?`<p class="muted">新项目导入位置：<code>${esc(d.import_root)}</code></p><button class="text-button" data-action="scan" data-id="${d.id}">立即刷新项目与工具状态</button>`:''}<ul>${(d.projects||[]).map(p=>{const items=(d.inventory||[]).filter(i=>i.project===p.key&&i.count>0&&(provider==='all'||i.provider===provider));return `<li><strong>${esc(shortPath(p.path))}</strong> ${p.missing?'<span class="badge warn">代码目录已不存在</span>':''}<br><code>${esc(p.path)}</code>${items.map(i=>`<div class="project-transfer"><span>${names[i.provider]} · ${i.count} 个记录${i.bytes?' · '+bytes(i.bytes):''}${i.largest?' · 最大单文件 '+bytes(i.largest):''}</span><button class="text-button" data-action="export-project" data-device="${d.id}" data-project="${esc(p.key)}" data-provider="${i.provider}">创建快照 →</button>${i.agent_status==='running'?`<small class="error">${names[i.provider]} 正在运行，导出前请完全退出。</small>`:''}${i.error?`<small class="error">${esc(i.error)}</small>`:''}</div>`).join('')}${!items.length?'<p class="muted">暂未发现会话</p>':''}</li>`}).join('')||'<li>连接后自动扫描项目，无需手填路径。</li>'}</ul>${(d.inventory||[]).filter(i=>!i.project&&i.error).map(i=>`<p class="error">${esc(i.error)}</p>`).join('')}</article>`).join(''):`<div class="empty"><h3>先连接两台电脑</h3><p>每台电脑使用各自的 client.json；完成一次 SSH 设置后，启动客户端即可自动连接。</p><button class="primary" data-action="device">添加设备</button></div>`;
 }
 function progressHTML(j){
  const p=j.progress;if(j.status!=='running'||!p)return '';
@@ -45,7 +56,15 @@ function progressHTML(j){
  return `<div class="job-progress"><p>${esc(p.message)}${p.total>0?' · '+Math.floor(p.done/p.total*100)+'%':''}</p>${p.total>0?`<progress max="${p.total}" value="${p.done}"></progress><small>${transfer?bytes(p.done)+' / '+bytes(p.total):p.done+' / '+p.total+' 个文件'}</small>`:'<p class="muted">正在处理，请保持客户端与连接开启。</p>'}</div>`;
 }
 function renderJobs(){
- $('#job-list').innerHTML=state.jobs.length?state.jobs.map(j=>{
+ const query=$('#job-search').value.trim().toLocaleLowerCase();
+ const jobs=state.jobs.filter(j=>{
+  const project=state.devices.find(d=>d.id===j.device_id)?.projects?.find(p=>p.key===j.project);
+  const text=[j.id,j.project,project?.path,deviceName(j.device_id),names[j.provider],kinds[j.kind],statuses[j.status],j.error,j.result?.message].join(' ').toLocaleLowerCase();
+  return !query||query.split(/\s+/).every(term=>text.includes(term));
+ });
+ $('#job-search-count').textContent=query?'找到 '+jobs.length+' 条记录（当前载入 '+state.jobs.length+' 条）':'';
+ if(query&&!jobs.length){$('#job-list').innerHTML='<div class="empty"><h3>没有匹配的传输记录</h3><p>可搜索项目、设备、工具、任务编号或状态。</p><button class="secondary" data-action="clear-job-search">显示全部记录</button></div>';return}
+ $('#job-list').innerHTML=state.jobs.length?jobs.map(j=>{
  const result=j.result||{};
  const proj=state.devices.find(d=>d.id===j.device_id)?.projects?.find(p=>p.key===j.project);
  const sid=result.snapshot_id, canContinue=j.kind==='export'&&j.status==='done'&&state.snapshots.some(b=>b.id===sid);
@@ -93,6 +112,8 @@ function downloadText(name,text){const url=URL.createObjectURL(new Blob([text],{
 document.addEventListener('click',e=>{
  const b=e.target.closest('[data-action]');if(!b)return;const j=state.jobs.find(j=>j.id===b.dataset.id);
  switch(b.dataset.action){
+ case'clear-device-search':$('#device-search').value='';$('#device-provider').value='all';renderDevices();$('#device-search').focus();break;
+ case'clear-job-search':$('#job-search').value='';renderJobs();$('#job-search').focus();break;
  case'export-project':exportModal({device:b.dataset.device,project:b.dataset.project,provider:b.dataset.provider});break;
  case'retry':guarded(async()=>{await api('/jobs',{method:'POST',body:JSON.stringify({kind:j.kind,device_id:j.device_id,provider:j.provider,project:j.project,snapshot_id:j.snapshot_id,new_project:j.new_project,folder:j.folder,keep_snapshot:j.keep_snapshot})});await refresh();toast('已重新排队')});break;
  case'scan':guarded(async()=>{await api('/jobs',{method:'POST',body:JSON.stringify({kind:'scan',device_id:b.dataset.id})});setTab('jobs');await refresh();toast('已请求设备重新扫描')});break;
@@ -108,6 +129,7 @@ $('#logout').onclick=async()=>{await api('/logout',{method:'POST'});showLogin()}
 let uploadKeep=false;
 $('#upload-button').onclick=()=>{modal(`<h2>导入压缩包</h2><label>服务器保存方式<select id="upload-retention"><option value="false">临时中转（24 小时到期，成功预览后清理）</option><option value="true">长期快照（手动删除）</option></select></label><div class="dialog-actions"><button class="primary" id="choose-upload">选择压缩包</button></div>`);$('#choose-upload').onclick=()=>{uploadKeep=$('#upload-retention').value==='true';closeModal();$('#upload-file').click()}};
 $('#upload-file').onchange=()=>guarded(async()=>{const f=$('#upload-file').files[0];if(!f)return;if(f.size>2*1024**3)throw Error('压缩包不能超过 2 GiB');toast('正在上传并校验压缩包…');await api('/snapshots/upload'+(uploadKeep?'?keep=true':''),{method:'POST',body:f});$('#upload-file').value='';await refresh();toast(uploadKeep?'已导入长期快照':'已导入临时中转，24 小时后清理')});
+$('#device-search').oninput=renderDevices;$('#device-provider').onchange=renderDevices;$('#job-search').oninput=renderJobs;
 refresh();setInterval(()=>{if(logged)refresh()},5000);
 
 // Optional browser tool surface. Authentication and preview checks use the same API.
