@@ -82,6 +82,7 @@ func run() error {
 		if err != nil {
 			return err
 		}
+		go s.RunCleanup(ctx)
 		srv := &http.Server{Addr: *listen, Handler: s.Handler(), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 2 * time.Hour, WriteTimeout: 2 * time.Hour, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16384}
 		go func() {
 			<-ctx.Done()
@@ -95,6 +96,9 @@ func run() error {
 			return nil
 		}
 		return err
+	}
+	if os.Args[1] == "setup-ssh" {
+		return relay.ConfigureSSH(ctx, *config)
 	}
 	c, err := relay.LoadConfig(*config)
 	if err != nil {

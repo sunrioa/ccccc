@@ -222,6 +222,11 @@ func (c *Client) Run(ctx context.Context) error {
 		return e
 	}
 	defer lock.Close()
+	stopTunnel, e := c.startTunnel(ctx)
+	if e != nil {
+		return e
+	}
+	defer stopTunnel()
 	inv := c.refreshInventory()
 	for {
 		cc, cl := context.WithTimeout(ctx, 20*time.Second)

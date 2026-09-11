@@ -248,7 +248,9 @@ func (s *Server) adminAPI(w http.ResponseWriter, r *http.Request) {
 		sort.Slice(devices, func(i, j int) bool { return devices[i].Name < devices[j].Name })
 		snapshots := []*Snapshot{}
 		for _, b := range s.state.Snapshots {
-			snapshots = append(snapshots, b)
+			if !b.Purged {
+				snapshots = append(snapshots, b)
+			}
 		}
 		sort.Slice(snapshots, func(i, j int) bool { return snapshots[i].Created.After(snapshots[j].Created) })
 		jobs := []*Job{}
@@ -321,7 +323,7 @@ func (s *Server) adminAPI(w http.ResponseWriter, r *http.Request) {
 				}
 				j.Project = importKey(j.Folder)
 			}
-			if b == nil || !j.NewProject && !hasProject(d, j.Project) {
+			if b == nil || b.Purged || !j.NewProject && !hasProject(d, j.Project) {
 				fail(w, 400, "快照或目标项目无效")
 				return
 			}
@@ -401,19 +403,10 @@ func (s *Server) adminAPI(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		file := filepath.Join(s.Dir, "bundles", sid+".zip")
-		if e := os.Rename(file, file+".deleted"); e != nil {
+		if e := s.purgeLocked(b); e != nil {
 			fail(w, 500, e)
 			return
 		}
-		delete(s.state.Snapshots, sid)
-		if e := s.save(); e != nil {
-			s.state.Snapshots[sid] = b
-			_ = os.Rename(file+".deleted", file)
-			fail(w, 500, e)
-			return
-		}
-		_ = os.Remove(file + ".deleted")
 		reply(w, map[string]bool{"ok": true})
 	default:
 		fail(w, 404, "not found")
@@ -542,6 +535,7 @@ func (s *Server) agentAPI(w http.ResponseWriter, r *http.Request, did string) {
 			fail(w, 500, e)
 			return
 		}
+		_ = s.cleanupLocked(time.Now())
 		reply(w, j)
 	default:
 		fail(w, 404, "not found")
@@ -549,9 +543,13 @@ func (s *Server) agentAPI(w http.ResponseWriter, r *http.Request, did string) {
 }
 func (s *Server) download(w http.ResponseWriter, r *http.Request, sid string) {
 	s.mu.Lock()
-	b := s.state.Snapshots[sid]
+	var b *Snapshot
+	if original := s.state.Snapshots[sid]; original != nil {
+		copy := *original
+		b = &copy
+	}
 	s.mu.Unlock()
-	if b == nil || !validID.MatchString(sid) {
+	if b == nil || b.Purged || !validID.MatchString(sid) {
 		fail(w, 404, "快照不存在")
 		return
 	}
@@ -571,7 +569,9 @@ func (s *Server) receive(w http.ResponseWriter, r *http.Request, did, jid string
 	s.mu.Lock()
 	var total int64
 	for _, b := range s.state.Snapshots {
-		total += b.Size
+		if !b.Purged {
+			total += b.Size
+		}
 	}
 	j := s.state.Jobs[jid]
 	allowed := did == "manual" || (j != nil && j.DeviceID == did && j.Kind == "export" && j.Status == "running")
@@ -613,17 +613,23 @@ func (s *Server) receive(w http.ResponseWriter, r *http.Request, did, jid string
 	}
 	stat, _ := os.Stat(f.Name())
 	b := &Snapshot{ID: id(), DeviceID: did, Provider: m.Provider, Project: m.Project, SourcePath: m.SourcePath, SourceOS: m.SourceOS, Created: time.Now().UTC(), Size: stat.Size(), RawSize: m.RawSize, Sessions: m.Sessions, Extras: len(m.Extras), SHA256: sum, MinClientVersion: m.MinClientVersion}
+	b.Temporary = did == "manual" && r.URL.Query().Get("keep") != "true" || did != "manual" && !j.KeepSnapshot
+	if b.Temporary {
+		b.Expires = b.Created.Add(24 * time.Hour)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, old := range s.state.Snapshots {
-		if old.SHA256 == sum {
+		if old.SHA256 == sum && !old.Purged && old.Temporary == b.Temporary && !b.Temporary {
 			reply(w, old)
 			return
 		}
 	}
 	var used int64
 	for _, old := range s.state.Snapshots {
-		used += old.Size
+		if !old.Purged {
+			used += old.Size
+		}
 	}
 	if used+b.Size > 20<<30 {
 		fail(w, 507, "快照存储空间不足，请先下载归档并删除旧快照")

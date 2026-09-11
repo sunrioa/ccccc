@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-const Version = "0.3.0"
+const Version = "0.4.0"
 const MaxBundle int64 = 2 << 30
 const MaxExpanded int64 = 8 << 30
 
@@ -26,16 +26,17 @@ type Project struct {
 	Missing    bool   `json:"missing,omitempty"`
 }
 type ClientConfig struct {
-	Server          string    `json:"server"`
-	DeviceID        string    `json:"device_id"`
-	Token           string    `json:"token"`
-	DataDir         string    `json:"data_dir"`
-	CodexHome       string    `json:"codex_home,omitempty"`
-	ClaudeHome      string    `json:"claude_home,omitempty"`
-	Projects        []Project `json:"projects"`
-	ImportRoot      string    `json:"import_root,omitempty"`
-	DisableAutoScan bool      `json:"disable_auto_scan,omitempty"`
-	AllowHTTP       bool      `json:"allow_http,omitempty"`
+	SSH             *SSHConfig `json:"ssh,omitempty"`
+	Server          string     `json:"server"`
+	DeviceID        string     `json:"device_id"`
+	Token           string     `json:"token"`
+	DataDir         string     `json:"data_dir"`
+	CodexHome       string     `json:"codex_home,omitempty"`
+	ClaudeHome      string     `json:"claude_home,omitempty"`
+	Projects        []Project  `json:"projects"`
+	ImportRoot      string     `json:"import_root,omitempty"`
+	DisableAutoScan bool       `json:"disable_auto_scan,omitempty"`
+	AllowHTTP       bool       `json:"allow_http,omitempty"`
 }
 type Inventory struct {
 	Provider    string `json:"provider"`
@@ -58,6 +59,9 @@ type Device struct {
 	Inventory  []Inventory `json:"inventory"`
 }
 type Snapshot struct {
+	Temporary        bool      `json:"temporary,omitempty"`
+	Expires          time.Time `json:"expires,omitempty"`
+	Purged           bool      `json:"purged,omitempty"`
 	ID               string    `json:"id"`
 	DeviceID         string    `json:"device_id"`
 	Provider         string    `json:"provider"`
@@ -80,22 +84,23 @@ type Progress struct {
 }
 
 type Job struct {
-	Progress   *Progress       `json:"progress,omitempty"`
-	ID         string          `json:"id"`
-	DeviceID   string          `json:"device_id"`
-	Kind       string          `json:"kind"`
-	Provider   string          `json:"provider,omitempty"`
-	Project    string          `json:"project,omitempty"`
-	SnapshotID string          `json:"snapshot_id,omitempty"`
-	NewProject bool            `json:"new_project,omitempty"`
-	Folder     string          `json:"folder,omitempty"`
-	PreviewID  string          `json:"preview_id,omitempty"`
-	RestoreID  string          `json:"restore_id,omitempty"`
-	Status     string          `json:"status"`
-	Created    time.Time       `json:"created"`
-	Updated    time.Time       `json:"updated"`
-	Result     json.RawMessage `json:"result,omitempty"`
-	Error      string          `json:"error,omitempty"`
+	KeepSnapshot bool            `json:"keep_snapshot,omitempty"`
+	Progress     *Progress       `json:"progress,omitempty"`
+	ID           string          `json:"id"`
+	DeviceID     string          `json:"device_id"`
+	Kind         string          `json:"kind"`
+	Provider     string          `json:"provider,omitempty"`
+	Project      string          `json:"project,omitempty"`
+	SnapshotID   string          `json:"snapshot_id,omitempty"`
+	NewProject   bool            `json:"new_project,omitempty"`
+	Folder       string          `json:"folder,omitempty"`
+	PreviewID    string          `json:"preview_id,omitempty"`
+	RestoreID    string          `json:"restore_id,omitempty"`
+	Status       string          `json:"status"`
+	Created      time.Time       `json:"created"`
+	Updated      time.Time       `json:"updated"`
+	Result       json.RawMessage `json:"result,omitempty"`
+	Error        string          `json:"error,omitempty"`
 }
 type State struct {
 	Devices   map[string]*Device   `json:"devices"`
@@ -260,6 +265,7 @@ func LoadConfig(p string) (ClientConfig, error) {
 	if c.ClaudeHome != "" {
 		c.ClaudeHome = expand(c.ClaudeHome)
 	}
+	resolveSSHPaths(&c, p)
 	c.ImportRoot = importRoot(c)
 	seen := map[string]bool{}
 	for i := range c.Projects {

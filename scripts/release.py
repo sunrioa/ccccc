@@ -20,7 +20,7 @@ def main():
     dest.mkdir(parents=True, exist_ok=True)
     sums = []
     for os_name, arch in TARGETS:
-        name = f"session-relay-0.3.0-{os_name}-{arch}"
+        name = f"session-relay-0.4.0-{os_name}-{arch}"
         with tempfile.TemporaryDirectory(prefix="session-relay-build-") as temp:
             package = Path(temp) / name
             package.mkdir()
@@ -32,11 +32,17 @@ def main():
                 shutil.copy2(ROOT / filename, package / filename)
             shutil.copytree(ROOT / "deploy", package / "deploy")
             if os_name == "windows":
-                (package / "start-client.cmd").write_bytes(b'@echo off\r\ncd /d "%~dp0"\r\nrelay.exe client --config client.json\r\npause\r\n')
+                (package / "start-client.cmd").write_bytes(b'@echo off\r\nchcp 65001 >nul\r\ncd /d "%~dp0"\r\nrelay.exe client --config client.json\r\npause\r\n')
             else:
                 launcher = package / ("start-client.command" if os_name == "darwin" else "start-client.sh")
                 launcher.write_text('#!/bin/sh\ncd -- "$(dirname -- "$0")" || exit 1\n./relay client --config client.json\n', encoding="utf-8")
                 launcher.chmod(0o755)
+            if os_name == "windows":
+                (package / "setup-ssh.cmd").write_bytes(b'@echo off\r\nchcp 65001 >nul\r\ncd /d "%~dp0"\r\nrelay.exe setup-ssh --config client.json\r\npause\r\n')
+            else:
+                setup = package / ("setup-ssh.command" if os_name == "darwin" else "setup-ssh.sh")
+                setup.write_text('#!/bin/sh\ncd -- "$(dirname -- "$0")" || exit 1\n./relay setup-ssh --config client.json\n', encoding="utf-8")
+                setup.chmod(0o755)
             archive = dest / (name + ".zip")
             with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
                 for path in sorted(package.rglob("*")):
@@ -44,7 +50,7 @@ def main():
                         z.write(path, path.relative_to(package.parent))
             sums.append(f"{hashlib.sha256(archive.read_bytes()).hexdigest()}  {archive.name}")
             print(f"Built {archive.name} ({archive.stat().st_size:,} bytes)", flush=True)
-    source = dest / "session-relay-0.3.0-source.zip"
+    source = dest / "session-relay-0.4.0-source.zip"
     with zipfile.ZipFile(source, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
         for path in sorted(ROOT.rglob("*")):
             rel = path.relative_to(ROOT)
