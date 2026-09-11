@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -121,6 +122,12 @@ func (e *Engine) Inventory() []Inventory {
 	}
 	for _, provider := range []string{"codex", "claude"} {
 		scan, err := scans[provider], errs[provider]
+		agentStatus := "ready"
+		if guardErr := e.guard(provider); errors.Is(guardErr, ErrAgentRunning) {
+			agentStatus = "running"
+		} else if guardErr != nil {
+			agentStatus = "unknown"
+		}
 		if len(e.Config.Projects) == 0 && (err != nil || len(scan.Warnings) > 0) {
 			x := Inventory{Provider: provider, Error: strings.Join(scan.Warnings, "; ")}
 			if err != nil {
@@ -129,13 +136,17 @@ func (e *Engine) Inventory() []Inventory {
 			out = append(out, x)
 		}
 		for _, p := range e.Config.Projects {
-			x := Inventory{Provider: provider, Project: p.Key}
+			x := Inventory{Provider: provider, Project: p.Key, AgentStatus: agentStatus}
 			if err != nil {
 				x.Error = err.Error()
 			} else {
 				for _, s := range scan.Sessions {
 					if pathKey(s.CWD) == pathKey(p.Path) {
 						x.Count++
+						x.Bytes += s.SizeBytes
+						if s.SizeBytes > x.Largest {
+							x.Largest = s.SizeBytes
+						}
 					}
 				}
 				x.Error = strings.Join(scan.Warnings, "; ")

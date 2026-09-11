@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -21,7 +22,10 @@ import (
 	"github.com/ahmojo/codex-claude-transfer/internal/codexreconcile"
 )
 
+var ErrAgentRunning = errors.New("对应 Agent 仍在运行")
+
 type Engine struct {
+	Progress      func(Progress)
 	Config        ClientConfig
 	guardOverride func(string) error
 	skipDiscovery bool // only set by isolated tests; production performs native discovery.
@@ -89,7 +93,7 @@ func (e *Engine) guard(provider string) error {
 		for _, line := range strings.Split(text, "\n") {
 			fields := strings.Fields(line)
 			if len(fields) > 0 && filepath.Base(fields[0]) == provider {
-				return fmt.Errorf("请先完全退出 %s，然后重试", provider)
+				return fmt.Errorf("%w：请先完全退出 %s，再点击重试；保留 relay 和 SSH 窗口", ErrAgentRunning, provider)
 			}
 		}
 	}
@@ -101,7 +105,7 @@ func (e *Engine) guard(provider string) error {
 	}
 	for _, n := range needles {
 		if strings.Contains(text, n) {
-			return fmt.Errorf("请先完全退出 %s（包括桌面应用与 CLI），然后重试", provider)
+			return fmt.Errorf("%w：请完全退出 %s 桌面应用和 CLI，再点击重试；保留 relay 和 SSH 窗口", ErrAgentRunning, provider)
 		}
 	}
 	return nil
@@ -111,6 +115,7 @@ func (e *Engine) Preview(file, project, pid string) (Plan, error) {
 	if !validID.MatchString(pid) {
 		return plan, fmt.Errorf("预览 ID 无效")
 	}
+	e.report("verify", "正在校验压缩包", 0, 0)
 	m, err := InspectArchive(file)
 	if err != nil {
 		return plan, err
@@ -177,6 +182,9 @@ func (e *Engine) Preview(file, project, pid string) (Plan, error) {
 	if err != nil {
 		return plan, err
 	}
+	if len(inspect.Manifest.Sessions)+len(inspect.Manifest.Memory)+len(m.Extras) > 5000 {
+		return plan, fmt.Errorf("单次恢复超过 5000 个文件")
+	}
 	kind := inspect.Manifest.Tool
 	if kind == "" {
 		kind = "codex"
@@ -186,7 +194,7 @@ func (e *Engine) Preview(file, project, pid string) (Plan, error) {
 	}
 	for _, s := range inspect.Manifest.Sessions {
 		if s.SizeBytes > maxFile {
-			return plan, fmt.Errorf("单文件超过 128 MiB")
+			return plan, fmt.Errorf("单文件超过 2 GiB")
 		}
 		if s.OriginalCWD != "" && s.OriginalCWD != m.SourcePath {
 			return plan, fmt.Errorf("快照混入其他项目：%s", s.OriginalCWD)
@@ -224,20 +232,28 @@ func (e *Engine) Preview(file, project, pid string) (Plan, error) {
 	if err != nil {
 		return plan, err
 	}
-	res, err := bundle.Import(h, bundle.ImportOptions{BundlePath: native, DryRun: true, IncludeArchived: true, MapCWD: []bundle.CWDMapping{{Old: m.SourcePath, New: p.Path}}, Merge: true, WithMemory: m.Provider == "claude"})
+	res, expanded, err := bundle.PlanStreaming(h, bundle.ImportOptions{BundlePath: native, DryRun: true, IncludeArchived: true, MapCWD: []bundle.CWDMapping{{Old: m.SourcePath, New: p.Path}}, Merge: true, WithMemory: m.Provider == "claude"}, filepath.Join(dir, "stream"), func(done, total int) {
+		e.report("plan", "正在映射路径、比较会话并生成预览", int64(done), int64(total))
+	})
 	if err != nil {
 		return plan, err
 	}
-	plan = Plan{ID: pid, Provider: m.Provider, Project: project, Target: p.Path, CanApply: true, Changes: []Change{}, Warnings: append([]string{}, res.Warnings...), Created: time.Now().UTC()}
+	for _, x := range m.Extras {
+		expanded += x.Size
+	}
+	if expanded > MaxExpanded {
+		return plan, fmt.Errorf("展开总量超过 8 GiB")
+	}
+	plan = Plan{ExpandedBytes: expanded, ID: pid, Provider: m.Provider, Project: project, Target: p.Path, CanApply: true, Changes: []Change{}, Warnings: append([]string{}, res.Warnings...), Created: time.Now().UTC()}
 	plan.BundleSHA, err = hashFile(file)
 	if err != nil {
 		return plan, err
 	}
-	if res.Conflicts > 0 || res.MappedCompressedSkipped > 0 || res.SkippedOther > 0 {
+	if res.MemoryConflicts > 0 || res.Conflicts > 0 || res.MappedCompressedSkipped > 0 || res.SkippedOther > 0 {
 		plan.CanApply = false
 	}
 	destinations := map[string]bool{}
-	stage := func(dest, action string, data []byte) error {
+	stage := func(dest, action string, writePayload func(io.Writer) error) error {
 		rel, x := filepath.Rel(h.Root, dest)
 		if x != nil {
 			return x
@@ -259,11 +275,22 @@ func (e *Engine) Preview(file, project, pid string) (Plan, error) {
 		if action == "conflict" {
 			plan.CanApply = false
 		}
-		if data != nil {
-			change.After = hashBytes(data)
-			if x = atomicWrite(filepath.Join(dir, fmt.Sprintf("%06d.data", len(plan.Changes))), data); x != nil {
-				return x
+		if writePayload != nil {
+			staged := filepath.Join(dir, fmt.Sprintf("%06d.data", len(plan.Changes)))
+			f, err := os.OpenFile(staged, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+			if err != nil {
+				return err
 			}
+			hash := sha256.New()
+			err = writePayload(io.MultiWriter(f, hash))
+			ce := f.Close()
+			if err == nil {
+				err = ce
+			}
+			if err != nil {
+				return err
+			}
+			change.After = hex.EncodeToString(hash.Sum(nil))
 		}
 		plan.Changes = append(plan.Changes, change)
 		return nil
@@ -275,36 +302,41 @@ func (e *Engine) Preview(file, project, pid string) (Plan, error) {
 			}
 			continue
 		}
-		var data []byte
+		var payload func(io.Writer) error
 		if it.Action == bundle.ActionImport || it.Action == bundle.ActionUpdate {
-			data, err = bundle.PlannedBytes(native, it)
-			if err != nil {
-				return plan, err
-			}
+			payload = func(w io.Writer) error { return bundle.WritePlanned(native, it, w) }
 		}
-		if err = stage(it.DestPath, string(it.Action), data); err != nil {
+		if err = stage(it.DestPath, string(it.Action), payload); err != nil {
 			return plan, err
+		}
+		if it.StagedPath != "" {
+			_ = os.Remove(it.StagedPath)
 		}
 	}
 	for _, x := range m.Extras {
 		dest := filepath.Join(h.Root, "projects", claudehome.EncodeCWD(p.Path), filepath.FromSlash(x.Rel))
-		data, err := zipBytes(entries["extras/"+x.Rel], maxFile)
-		if err != nil {
-			return plan, err
-		}
 		before, err := fileHash(dest)
 		if err != nil {
 			return plan, err
 		}
 		action := "import"
+		var payload func(io.Writer) error
 		if before == x.SHA256 {
 			action = "skip-identical"
-			data = nil
 		} else if before != "absent" {
 			action = "conflict"
-			data = nil
+		} else {
+			payload = func(w io.Writer) error {
+				r, err := entries["extras/"+x.Rel].Open()
+				if err != nil {
+					return err
+				}
+				defer r.Close()
+				_, err = io.Copy(w, r)
+				return err
+			}
 		}
-		if err = stage(dest, action, data); err != nil {
+		if err = stage(dest, action, payload); err != nil {
 			return plan, err
 		}
 	}
@@ -413,6 +445,7 @@ func (e *Engine) Apply(pid, jid string) (map[string]any, error) {
 	}
 	defer os.RemoveAll(staging)
 	j := Journal{ID: jid, Plan: p, Status: "prepared", Created: time.Now().UTC()}
+	e.report("backup", "正在保存恢复前备份", 0, 0)
 	for i, c := range p.Changes {
 		if mutates(c) && c.Before != "absent" {
 			if err = copyFile(c.Path, filepath.Join(staging, fmt.Sprintf("%06d.before", i))); err != nil {
@@ -428,6 +461,7 @@ func (e *Engine) Apply(pid, jid string) (map[string]any, error) {
 	}
 	applyErr := func() error {
 		for i, c := range p.Changes {
+			e.report("restore", "正在恢复并校验会话", int64(i), int64(len(p.Changes)))
 			if !mutates(c) {
 				continue
 			}
@@ -547,4 +581,10 @@ func SortedProjects(ps []Project) []Project {
 	out := append([]Project{}, ps...)
 	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
 	return out
+}
+
+func (e *Engine) report(stage, message string, done, total int64) {
+	if e.Progress != nil {
+		e.Progress(Progress{Stage: stage, Message: message, Done: done, Total: total})
+	}
 }

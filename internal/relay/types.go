@@ -15,9 +15,9 @@ import (
 	"time"
 )
 
-const Version = "0.2.0"
-const MaxBundle int64 = 1 << 30
-const MaxExpanded int64 = 4 << 30
+const Version = "0.3.0"
+const MaxBundle int64 = 2 << 30
+const MaxExpanded int64 = 8 << 30
 
 type Project struct {
 	Key        string `json:"key"`
@@ -38,10 +38,13 @@ type ClientConfig struct {
 	AllowHTTP       bool      `json:"allow_http,omitempty"`
 }
 type Inventory struct {
-	Provider string `json:"provider"`
-	Project  string `json:"project"`
-	Count    int    `json:"count"`
-	Error    string `json:"error,omitempty"`
+	Provider    string `json:"provider"`
+	Project     string `json:"project"`
+	Count       int    `json:"count"`
+	Error       string `json:"error,omitempty"`
+	Bytes       int64  `json:"bytes"`
+	Largest     int64  `json:"largest"`
+	AgentStatus string `json:"agent_status,omitempty"`
 }
 type Device struct {
 	ID         string      `json:"id"`
@@ -55,20 +58,29 @@ type Device struct {
 	Inventory  []Inventory `json:"inventory"`
 }
 type Snapshot struct {
-	ID         string    `json:"id"`
-	DeviceID   string    `json:"device_id"`
-	Provider   string    `json:"provider"`
-	Project    string    `json:"project"`
-	SourcePath string    `json:"source_path"`
-	SourceOS   string    `json:"source_os"`
-	Created    time.Time `json:"created"`
-	Size       int64     `json:"size"`
-	RawSize    int64     `json:"raw_size"`
-	Sessions   int       `json:"sessions"`
-	Extras     int       `json:"extras"`
-	SHA256     string    `json:"sha256"`
+	ID               string    `json:"id"`
+	DeviceID         string    `json:"device_id"`
+	Provider         string    `json:"provider"`
+	Project          string    `json:"project"`
+	SourcePath       string    `json:"source_path"`
+	SourceOS         string    `json:"source_os"`
+	Created          time.Time `json:"created"`
+	Size             int64     `json:"size"`
+	RawSize          int64     `json:"raw_size"`
+	Sessions         int       `json:"sessions"`
+	Extras           int       `json:"extras"`
+	SHA256           string    `json:"sha256"`
+	MinClientVersion string    `json:"min_client_version,omitempty"`
 }
+type Progress struct {
+	Stage   string `json:"stage"`
+	Message string `json:"message"`
+	Done    int64  `json:"done"`
+	Total   int64  `json:"total"`
+}
+
 type Job struct {
+	Progress   *Progress       `json:"progress,omitempty"`
 	ID         string          `json:"id"`
 	DeviceID   string          `json:"device_id"`
 	Kind       string          `json:"kind"`
@@ -97,16 +109,17 @@ type Change struct {
 	After  string `json:"after"`
 }
 type Plan struct {
-	ID          string    `json:"id"`
-	Provider    string    `json:"provider"`
-	Project     string    `json:"project"`
-	Target      string    `json:"target"`
-	BundleSHA   string    `json:"bundle_sha"`
-	Fingerprint string    `json:"fingerprint"`
-	CanApply    bool      `json:"can_apply"`
-	Changes     []Change  `json:"changes"`
-	Warnings    []string  `json:"warnings"`
-	Created     time.Time `json:"created"`
+	ID            string    `json:"id"`
+	Provider      string    `json:"provider"`
+	Project       string    `json:"project"`
+	Target        string    `json:"target"`
+	BundleSHA     string    `json:"bundle_sha"`
+	Fingerprint   string    `json:"fingerprint"`
+	ExpandedBytes int64     `json:"expanded_bytes,omitempty"`
+	CanApply      bool      `json:"can_apply"`
+	Changes       []Change  `json:"changes"`
+	Warnings      []string  `json:"warnings"`
+	Created       time.Time `json:"created"`
 }
 
 var validID = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,80}$`)

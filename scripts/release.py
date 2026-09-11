@@ -20,7 +20,7 @@ def main():
     dest.mkdir(parents=True, exist_ok=True)
     sums = []
     for os_name, arch in TARGETS:
-        name = f"session-relay-0.2.0-{os_name}-{arch}"
+        name = f"session-relay-0.3.0-{os_name}-{arch}"
         with tempfile.TemporaryDirectory(prefix="session-relay-build-") as temp:
             package = Path(temp) / name
             package.mkdir()
@@ -44,7 +44,7 @@ def main():
                         z.write(path, path.relative_to(package.parent))
             sums.append(f"{hashlib.sha256(archive.read_bytes()).hexdigest()}  {archive.name}")
             print(f"Built {archive.name} ({archive.stat().st_size:,} bytes)", flush=True)
-    source = dest / "session-relay-0.2.0-source.zip"
+    source = dest / "session-relay-0.3.0-source.zip"
     with zipfile.ZipFile(source, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
         for path in sorted(ROOT.rglob("*")):
             rel = path.relative_to(ROOT)

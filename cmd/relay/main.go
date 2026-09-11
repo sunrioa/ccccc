@@ -82,7 +82,7 @@ func run() error {
 		if err != nil {
 			return err
 		}
-		srv := &http.Server{Addr: *listen, Handler: s.Handler(), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 20 * time.Minute, WriteTimeout: 20 * time.Minute, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16384}
+		srv := &http.Server{Addr: *listen, Handler: s.Handler(), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 2 * time.Hour, WriteTimeout: 2 * time.Hour, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16384}
 		go func() {
 			<-ctx.Done()
 			c, stop := context.WithTimeout(context.Background(), 10*time.Second)

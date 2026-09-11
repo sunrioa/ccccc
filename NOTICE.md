@@ -17,3 +17,5 @@ Session Relay 的服务端、客户端、Web 界面、压缩容器和恢复事�
 5. zstdcli 接口改为内置 `github.com/klauspost/compress/zstd v1.20.0`，不再依赖外部 zstd 程序；对应测试夹具改为内置编码器。
 
 新增代码按 MIT 许可分发。压缩库的许可证随发布包提供。OpenAI / Anthropic 均未参与或认可本项目。
+
+0.3 增加 `bundle.PlanStreaming`：保留旧 CCT API 的原限制与行为，Relay 改用经过完整校验的磁盘暂存、逐条 JSONL 映射和追加比较；避免扩大旧的整文件内存读取路径。

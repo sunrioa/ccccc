@@ -26,18 +26,19 @@ type Extra struct {
 	SHA256 string `json:"sha256"`
 }
 type Archive struct {
-	Format     string  `json:"format"`
-	Provider   string  `json:"provider"`
-	Project    string  `json:"project"`
-	SourcePath string  `json:"source_path"`
-	SourceOS   string  `json:"source_os"`
-	NativeSHA  string  `json:"native_sha"`
-	Sessions   int     `json:"sessions"`
-	RawSize    int64   `json:"raw_size"`
-	Extras     []Extra `json:"extras"`
+	MinClientVersion string  `json:"min_client_version,omitempty"`
+	Format           string  `json:"format"`
+	Provider         string  `json:"provider"`
+	Project          string  `json:"project"`
+	SourcePath       string  `json:"source_path"`
+	SourceOS         string  `json:"source_os"`
+	NativeSHA        string  `json:"native_sha"`
+	Sessions         int     `json:"sessions"`
+	RawSize          int64   `json:"raw_size"`
+	Extras           []Extra `json:"extras"`
 }
 
-const maxFile int64 = 128 << 20
+const maxFile int64 = 2 << 30
 
 func safeRel(rel string) error {
 	if _, e := safety.CleanRelPath(rel); e != nil {
@@ -121,7 +122,7 @@ func InspectArchive(file string) (Archive, error) {
 		entries[f.Name] = f
 		total += f.UncompressedSize64
 		if total > uint64(MaxExpanded) {
-			return m, fmt.Errorf("解压后超过 4 GiB")
+			return m, fmt.Errorf("解压后超过 8 GiB")
 		}
 	}
 	mf := entries["relay.json"]
@@ -220,6 +221,7 @@ func (e *Engine) scan(provider string) (sessions.ScanResult, error) {
 }
 func (e *Engine) Export(provider, key, out string) (Archive, error) {
 	var m Archive
+	e.report("check", "检查来源工具状态", 0, 0)
 	if err := e.guard(provider); err != nil {
 		return m, err
 	}
@@ -248,6 +250,7 @@ func (e *Engine) Export(provider, key, out string) (Archive, error) {
 	}
 	defer os.RemoveAll(tmp)
 	native := filepath.Join(tmp, "sessions.codexbundle")
+	e.report("compress", "正在无损压缩会话；大项目可能需要几分钟", 0, 0)
 	res, err := bundle.Export(h, bundle.ExportOptions{Tool: agent.Kind(provider), ClaudeHome: c, ProjectPath: p.Path, OutputPath: native, IncludeArchived: true, WithMemory: provider == "claude"})
 	if err != nil {
 		return m, err
@@ -262,14 +265,14 @@ func (e *Engine) Export(provider, key, out string) (Archive, error) {
 			}
 		}
 	}
-	m = Archive{Format: "session-relay-v1", Provider: provider, Project: key, SourcePath: p.Path, SourceOS: runtime.GOOS, Sessions: res.IncludedCount, Extras: []Extra{}}
+	m = Archive{MinClientVersion: Version, Format: "session-relay-v1", Provider: provider, Project: key, SourcePath: p.Path, SourceOS: runtime.GOOS, Sessions: res.IncludedCount, Extras: []Extra{}}
 	m.NativeSHA, err = hashFile(native)
 	if err != nil {
 		return m, err
 	}
 	for _, s := range res.Manifest.Sessions {
 		if s.SizeBytes > maxFile {
-			return m, fmt.Errorf("单个会话超过 128 MiB：%s", s.OriginalPath)
+			return m, fmt.Errorf("单个会话超过 2 GiB：%s", s.OriginalPath)
 		}
 		m.RawSize += s.SizeBytes
 	}
@@ -339,7 +342,7 @@ func (e *Engine) Export(provider, key, out string) (Archive, error) {
 	}
 	sort.Slice(m.Extras, func(i, j int) bool { return m.Extras[i].Rel < m.Extras[j].Rel })
 	if m.RawSize > MaxExpanded {
-		return m, fmt.Errorf("原始数据超过 4 GiB")
+		return m, fmt.Errorf("原始数据超过 8 GiB")
 	}
 	if err = os.MkdirAll(filepath.Dir(out), 0700); err != nil {
 		return m, err
@@ -406,7 +409,7 @@ func (e *Engine) Export(provider, key, out string) (Archive, error) {
 	}
 	st, _ := os.Stat(f.Name())
 	if st.Size() > MaxBundle {
-		return m, fmt.Errorf("压缩包超过 1 GiB")
+		return m, fmt.Errorf("压缩包超过 2 GiB")
 	}
 	return m, os.Rename(f.Name(), out)
 }

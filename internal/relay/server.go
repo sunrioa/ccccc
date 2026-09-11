@@ -72,7 +72,7 @@ func fail(w http.ResponseWriter, code int, e any) {
 	json.NewEncoder(w).Encode(map[string]any{"error": fmt.Sprint(e)})
 }
 func body(w http.ResponseWriter, r *http.Request, v any) error {
-	r.Body = http.MaxBytesReader(w, r.Body, 8<<20)
+	r.Body = http.MaxBytesReader(w, r.Body, 16<<20)
 	d := json.NewDecoder(r.Body)
 	d.DisallowUnknownFields()
 	if e := d.Decode(v); e != nil {
@@ -325,6 +325,10 @@ func (s *Server) adminAPI(w http.ResponseWriter, r *http.Request) {
 				fail(w, 400, "快照或目标项目无效")
 				return
 			}
+			if b.MinClientVersion != "" && !supportsStreaming(d.Version) {
+				fail(w, 400, "此快照需要目标客户端升级到 0.3 或更新版本，保留配置并替换程序后重试")
+				return
+			}
 			j.Provider = b.Provider
 		case "restore":
 			p := s.state.Jobs[j.PreviewID]
@@ -363,6 +367,7 @@ func (s *Server) adminAPI(w http.ResponseWriter, r *http.Request) {
 		j.Created = time.Now().UTC()
 		j.Updated = j.Created
 		j.Result = nil
+		j.Progress = nil
 		j.Error = ""
 		s.state.Jobs[j.ID] = &j
 		if e := s.save(); e != nil {
@@ -490,6 +495,20 @@ func (s *Server) agentAPI(w http.ResponseWriter, r *http.Request, did string) {
 			}
 		}
 		reply(w, pick)
+	case strings.HasPrefix(r.URL.Path, "/api/agent/progress/") && r.Method == "POST":
+		j := s.state.Jobs[strings.TrimPrefix(r.URL.Path, "/api/agent/progress/")]
+		if j == nil || j.DeviceID != did || j.Status != "running" {
+			fail(w, 409, "任务不可更新")
+			return
+		}
+		var p Progress
+		if err := body(w, r, &p); err != nil || len(p.Message) > 1024 || len(p.Stage) > 40 || p.Done < 0 || p.Total < 0 || p.Total > 0 && p.Done > p.Total {
+			fail(w, 400, "进度无效")
+			return
+		}
+		j.Progress = &p
+		j.Updated = time.Now().UTC()
+		reply(w, map[string]bool{"ok": true})
 	case strings.HasPrefix(r.URL.Path, "/api/agent/result/") && r.Method == "POST":
 		j := s.state.Jobs[strings.TrimPrefix(r.URL.Path, "/api/agent/result/")]
 		if j == nil || j.DeviceID != did {
@@ -575,7 +594,7 @@ func (s *Server) receive(w http.ResponseWriter, r *http.Request, did, jid string
 	_, e = io.Copy(f, r.Body)
 	ce := f.Close()
 	if e != nil || ce != nil {
-		fail(w, 400, "上传不完整或超过 1 GiB")
+		fail(w, 400, "上传不完整或超过 2 GiB")
 		return
 	}
 	m, e := InspectArchive(f.Name())
@@ -593,7 +612,7 @@ func (s *Server) receive(w http.ResponseWriter, r *http.Request, did, jid string
 		return
 	}
 	stat, _ := os.Stat(f.Name())
-	b := &Snapshot{ID: id(), DeviceID: did, Provider: m.Provider, Project: m.Project, SourcePath: m.SourcePath, SourceOS: m.SourceOS, Created: time.Now().UTC(), Size: stat.Size(), RawSize: m.RawSize, Sessions: m.Sessions, Extras: len(m.Extras), SHA256: sum}
+	b := &Snapshot{ID: id(), DeviceID: did, Provider: m.Provider, Project: m.Project, SourcePath: m.SourcePath, SourceOS: m.SourceOS, Created: time.Now().UTC(), Size: stat.Size(), RawSize: m.RawSize, Sessions: m.Sessions, Extras: len(m.Extras), SHA256: sum, MinClientVersion: m.MinClientVersion}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, old := range s.state.Snapshots {
@@ -601,6 +620,14 @@ func (s *Server) receive(w http.ResponseWriter, r *http.Request, did, jid string
 			reply(w, old)
 			return
 		}
+	}
+	var used int64
+	for _, old := range s.state.Snapshots {
+		used += old.Size
+	}
+	if used+b.Size > 20<<30 {
+		fail(w, 507, "快照存储空间不足，请先下载归档并删除旧快照")
+		return
 	}
 	if e = os.Rename(f.Name(), filepath.Join(s.Dir, "bundles", b.ID+".zip")); e != nil {
 		fail(w, 500, e)
@@ -612,4 +639,12 @@ func (s *Server) receive(w http.ResponseWriter, r *http.Request, did, jid string
 		return
 	}
 	reply(w, b)
+}
+
+func supportsStreaming(version string) bool {
+	var major, minor int
+	if _, err := fmt.Sscanf(version, "%d.%d", &major, &minor); err != nil {
+		return false
+	}
+	return major > 0 || major == 0 && minor >= 3
 }

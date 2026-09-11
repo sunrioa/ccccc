@@ -64,6 +64,8 @@ type ImportItem struct {
 	// content, when non-nil, is the (cwd-mapped) bytes to write instead of
 	// streaming the entry verbatim from the bundle.
 	content []byte
+	// StagedPath is a disk-backed payload from PlanStreaming.
+	StagedPath string
 }
 
 // ImportOptions configures an import.
@@ -795,6 +797,10 @@ func decideAction(dest, expectedSum string) (Action, error) {
 // verifyBundle validates every entry path and confirms each file's SHA-256
 // matches checksums.json. checksums.json itself is not self-referential.
 func verifyBundle(zr *zip.Reader, checksums Checksums) error {
+	return verifyBundleWithLimits(zr, checksums, MaxSessionBytes, MaxBundleUncompressed)
+}
+
+func verifyBundleWithLimits(zr *zip.Reader, checksums Checksums, sessionLimit, totalLimit int64) error {
 	if len(zr.File) > MaxBundleEntries {
 		return fmt.Errorf("bundle has %d entries, over the %d limit", len(zr.File), MaxBundleEntries)
 	}
@@ -809,7 +815,7 @@ func verifyBundle(zr *zip.Reader, checksums Checksums) error {
 		}
 		// Bound resource use: reject oversized entries cheaply by their declared
 		// size, and cap the total uncompressed footprint of the whole bundle.
-		limit := int64(MaxSessionBytes)
+		limit := sessionLimit
 		if f.Name == ManifestName {
 			limit = MaxMetadataBytes
 		}
@@ -817,14 +823,14 @@ func verifyBundle(zr *zip.Reader, checksums Checksums) error {
 			return err
 		}
 		total += f.UncompressedSize64
-		if total > uint64(MaxBundleUncompressed) {
-			return fmt.Errorf("bundle total uncompressed size exceeds the %d-byte limit", MaxBundleUncompressed)
+		if total > uint64(totalLimit) {
+			return fmt.Errorf("bundle total uncompressed size exceeds the %d-byte limit", totalLimit)
 		}
 		expected, ok := checksums[f.Name]
 		if !ok {
 			return fmt.Errorf("bundle entry %q is missing from checksums.json", f.Name)
 		}
-		actual, err := sha256ZipEntry(f)
+		actual, err := sha256ZipEntryLimit(f, limit)
 		if err != nil {
 			return fmt.Errorf("hash %q: %w", f.Name, err)
 		}
@@ -1080,6 +1086,9 @@ func openByName(zr *zip.Reader, name string) (*zip.File, error) {
 }
 
 func sha256ZipEntry(f *zip.File) (string, error) {
+	return sha256ZipEntryLimit(f, MaxSessionBytes)
+}
+func sha256ZipEntryLimit(f *zip.File, limit int64) (string, error) {
 	rc, err := f.Open()
 	if err != nil {
 		return "", err
@@ -1088,12 +1097,12 @@ func sha256ZipEntry(f *zip.File) (string, error) {
 	h := sha256.New()
 	// Cap the inflated stream so a lying header (declared small, inflates huge)
 	// cannot exhaust CPU/memory during verification.
-	n, err := io.Copy(h, io.LimitReader(rc, MaxSessionBytes+1))
+	n, err := io.Copy(h, io.LimitReader(rc, limit+1))
 	if err != nil {
 		return "", err
 	}
-	if n > MaxSessionBytes {
-		return "", fmt.Errorf("entry %q exceeds the %d-byte limit (possible decompression bomb)", f.Name, MaxSessionBytes)
+	if n > limit {
+		return "", fmt.Errorf("entry %q exceeds the %d-byte limit (possible decompression bomb)", f.Name, limit)
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
 }

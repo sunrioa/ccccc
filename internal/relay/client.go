@@ -46,7 +46,7 @@ func NewClient(c ClientConfig) (*Client, error) {
 	if e = os.MkdirAll(c.DataDir, 0700); e != nil {
 		return nil, e
 	}
-	return &Client{Config: c, Engine: &Engine{Config: c}, HTTP: &http.Client{Timeout: 15 * time.Minute, CheckRedirect: func(*http.Request, []*http.Request) error { return fmt.Errorf("服务器不应重定向 API 请求") }}}, nil
+	return &Client{Config: c, Engine: &Engine{Config: c}, HTTP: &http.Client{Timeout: 2 * time.Hour, CheckRedirect: func(*http.Request, []*http.Request) error { return fmt.Errorf("服务器不应重定向 API 请求") }}}, nil
 }
 func (c *Client) request(ctx context.Context, method, path string, data io.Reader, contentType string) (*http.Response, error) {
 	r, e := http.NewRequestWithContext(ctx, method, c.Config.Server+path, data)
@@ -81,7 +81,7 @@ func (c *Client) api(ctx context.Context, method, path string, in, out any) erro
 	}
 	defer res.Body.Close()
 	if out != nil {
-		return json.NewDecoder(io.LimitReader(res.Body, 4<<20)).Decode(out)
+		return json.NewDecoder(io.LimitReader(res.Body, 16<<20)).Decode(out)
 	}
 	_, e = io.Copy(io.Discard, res.Body)
 	return e
@@ -111,7 +111,8 @@ func (c *Client) download(ctx context.Context, sid string) (string, error) {
 		return "", e
 	}
 	defer os.Remove(f.Name())
-	h, n, e := hashReader(io.TeeReader(io.LimitReader(res.Body, MaxBundle+1), f))
+	meter := &progressReader{r: io.LimitReader(res.Body, MaxBundle+1), total: res.ContentLength, stage: "download", report: c.Engine.Progress}
+	h, n, e := hashReader(io.TeeReader(meter, f))
 	ce := f.Close()
 	if e != nil {
 		return "", e
@@ -129,6 +130,23 @@ func (c *Client) download(ctx context.Context, sid string) (string, error) {
 	return dest, nil
 }
 func (c *Client) execute(ctx context.Context, j Job) (any, error) {
+	var progressMu sync.Mutex
+	var last time.Time
+	var lastStage string
+	report := func(p Progress) {
+		progressMu.Lock()
+		defer progressMu.Unlock()
+		if lastStage == p.Stage && time.Since(last) < time.Second && (p.Total == 0 || p.Done != p.Total) {
+			return
+		}
+		last, lastStage = time.Now(), p.Stage
+		cc, cancel := context.WithTimeout(ctx, 3*time.Second)
+		defer cancel()
+		_ = c.api(cc, "POST", "/api/agent/progress/"+j.ID, p, nil)
+	}
+	c.Engine.Progress = report
+	defer func() { c.Engine.Progress = nil }()
+
 	switch j.Kind {
 	case "export":
 		dir := filepath.Join(c.Config.DataDir, "exports")
@@ -144,7 +162,13 @@ func (c *Client) execute(ctx context.Context, j Job) (any, error) {
 			return nil, e
 		}
 		defer f.Close()
-		res, e := c.request(ctx, "POST", "/api/agent/upload/"+j.ID, f, "application/zip")
+		stat, e := f.Stat()
+		if e != nil {
+			return nil, e
+		}
+		meter := &progressReader{r: f, total: stat.Size(), stage: "upload", report: report}
+		report(Progress{Stage: "upload", Message: "正在上传到中转站", Total: stat.Size()})
+		res, e := c.request(ctx, "POST", "/api/agent/upload/"+j.ID, meter, "application/zip")
 		if e != nil {
 			return nil, e
 		}
@@ -155,6 +179,12 @@ func (c *Client) execute(ctx context.Context, j Job) (any, error) {
 		}
 		return map[string]any{"message": "已压缩并上传快照", "snapshot_id": b.ID, "size": b.Size, "raw_size": b.RawSize, "sessions": b.Sessions, "local_file": file}, nil
 	case "preview":
+		if providerOK(j.Provider) {
+			if err := c.Engine.guard(j.Provider); err != nil {
+				return nil, err
+			}
+		}
+		report(Progress{Stage: "download", Message: "正在从中转站下载快照"})
 		file, e := c.download(ctx, j.SnapshotID)
 		if e != nil {
 			return nil, e
@@ -329,4 +359,34 @@ func (c *Client) refreshInventory() []Inventory {
 	c.Config.Projects = append([]Project{}, c.Engine.Config.Projects...)
 	c.projectMu.Unlock()
 	return inv
+}
+
+type progressReader struct {
+	r           io.Reader
+	total, done int64
+	stage       string
+	report      func(Progress)
+}
+
+func (p *progressReader) Read(b []byte) (int, error) {
+	n, err := p.r.Read(b)
+	p.done += int64(n)
+	if p.report != nil {
+		total := p.total
+		if total < 0 {
+			total = 0
+		}
+		if total > 0 && total < p.done {
+			total = p.done
+		}
+		message := "正在从中转站下载"
+		if p.stage == "upload" {
+			message = "正在上传到中转站"
+		}
+		p.report(Progress{Stage: p.stage, Message: message, Done: p.done, Total: total})
+		if err == io.EOF && p.stage == "upload" {
+			p.report(Progress{Stage: "verify-server", Message: "上传完成，服务器正在校验压缩包"})
+		}
+	}
+	return n, err
 }
