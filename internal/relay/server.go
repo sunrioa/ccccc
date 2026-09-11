@@ -53,6 +53,9 @@ func NewServer(dir, publicURL, token string) (*Server, error) {
 	if s.state.Devices == nil || s.state.Jobs == nil || s.state.Snapshots == nil {
 		return nil, fmt.Errorf("state.json 格式无效")
 	}
+	if s.state.Bindings == nil {
+		s.state.Bindings = map[string]*ProjectBinding{}
+	}
 	for _, j := range s.state.Jobs {
 		if j.Status == "running" {
 			j.Status = "failed"
@@ -237,6 +240,10 @@ func (s *Server) adminAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if r.URL.Path == "/api/bindings" || strings.HasPrefix(r.URL.Path, "/api/bindings/") {
+		s.bindingAPI(w, r)
+		return
+	}
 	switch {
 	case r.URL.Path == "/api/state" && r.Method == "GET":
 		devices := []Device{}
@@ -255,13 +262,24 @@ func (s *Server) adminAPI(w http.ResponseWriter, r *http.Request) {
 		sort.Slice(snapshots, func(i, j int) bool { return snapshots[i].Created.After(snapshots[j].Created) })
 		jobs := []*Job{}
 		for _, j := range s.state.Jobs {
-			jobs = append(jobs, j)
+			v := *j
+			if j.Kind == "preview" {
+				if b := s.state.Snapshots[j.SnapshotID]; b != nil {
+					v.Source = &ProjectEndpoint{b.DeviceID, b.Project, b.SourcePath}
+				}
+			}
+			jobs = append(jobs, &v)
 		}
 		sort.Slice(jobs, func(i, j int) bool { return jobs[i].Created.After(jobs[j].Created) })
 		if len(jobs) > 100 {
 			jobs = jobs[:100]
 		}
-		reply(w, map[string]any{"devices": devices, "snapshots": snapshots, "jobs": jobs, "version": Version, "public_url": s.PublicURL})
+		bindings := []*ProjectBinding{}
+		for _, binding := range s.state.Bindings {
+			bindings = append(bindings, binding)
+		}
+		sort.Slice(bindings, func(i, j int) bool { return bindings[i].Created.Before(bindings[j].Created) })
+		reply(w, map[string]any{"bindings": bindings, "devices": devices, "snapshots": snapshots, "jobs": jobs, "version": Version, "public_url": s.PublicURL})
 	case r.URL.Path == "/api/devices" && r.Method == "POST":
 		var b struct {
 			Name   string `json:"name"`
@@ -370,6 +388,7 @@ func (s *Server) adminAPI(w http.ResponseWriter, r *http.Request) {
 		j.Updated = j.Created
 		j.Result = nil
 		j.Progress = nil
+		j.Source = nil
 		j.Error = ""
 		s.state.Jobs[j.ID] = &j
 		if e := s.save(); e != nil {

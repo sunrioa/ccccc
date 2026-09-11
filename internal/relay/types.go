@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-const Version = "0.4.1"
+const Version = "0.5.0"
 const MaxBundle int64 = 2 << 30
 const MaxExpanded int64 = 8 << 30
 
@@ -84,28 +84,30 @@ type Progress struct {
 }
 
 type Job struct {
-	KeepSnapshot bool            `json:"keep_snapshot,omitempty"`
-	Progress     *Progress       `json:"progress,omitempty"`
-	ID           string          `json:"id"`
-	DeviceID     string          `json:"device_id"`
-	Kind         string          `json:"kind"`
-	Provider     string          `json:"provider,omitempty"`
-	Project      string          `json:"project,omitempty"`
-	SnapshotID   string          `json:"snapshot_id,omitempty"`
-	NewProject   bool            `json:"new_project,omitempty"`
-	Folder       string          `json:"folder,omitempty"`
-	PreviewID    string          `json:"preview_id,omitempty"`
-	RestoreID    string          `json:"restore_id,omitempty"`
-	Status       string          `json:"status"`
-	Created      time.Time       `json:"created"`
-	Updated      time.Time       `json:"updated"`
-	Result       json.RawMessage `json:"result,omitempty"`
-	Error        string          `json:"error,omitempty"`
+	Source       *ProjectEndpoint `json:"source,omitempty"`
+	KeepSnapshot bool             `json:"keep_snapshot,omitempty"`
+	Progress     *Progress        `json:"progress,omitempty"`
+	ID           string           `json:"id"`
+	DeviceID     string           `json:"device_id"`
+	Kind         string           `json:"kind"`
+	Provider     string           `json:"provider,omitempty"`
+	Project      string           `json:"project,omitempty"`
+	SnapshotID   string           `json:"snapshot_id,omitempty"`
+	NewProject   bool             `json:"new_project,omitempty"`
+	Folder       string           `json:"folder,omitempty"`
+	PreviewID    string           `json:"preview_id,omitempty"`
+	RestoreID    string           `json:"restore_id,omitempty"`
+	Status       string           `json:"status"`
+	Created      time.Time        `json:"created"`
+	Updated      time.Time        `json:"updated"`
+	Result       json.RawMessage  `json:"result,omitempty"`
+	Error        string           `json:"error,omitempty"`
 }
 type State struct {
-	Devices   map[string]*Device   `json:"devices"`
-	Snapshots map[string]*Snapshot `json:"snapshots"`
-	Jobs      map[string]*Job      `json:"jobs"`
+	Bindings  map[string]*ProjectBinding `json:"bindings"`
+	Devices   map[string]*Device         `json:"devices"`
+	Snapshots map[string]*Snapshot       `json:"snapshots"`
+	Jobs      map[string]*Job            `json:"jobs"`
 }
 type Change struct {
 	Path   string `json:"path"`
